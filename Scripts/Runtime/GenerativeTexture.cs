@@ -16,6 +16,8 @@ namespace DoubTech.AI.Art
     {
         [SerializeField] GenerativeAIConfig config;
         [SerializeField] private float maxWaitTime = 60;
+        [SerializeField] private int baseResolution = 512;
+        [SerializeField] private float aspectRatio = 1;
         
         public Renderer renderer;
         
@@ -37,7 +39,7 @@ namespace DoubTech.AI.Art
 
         private async void RequestAsync(string prompt)
         {
-            var response = await ImageGenerationRequest.RequestAsync(config, prompt);
+            var response = await ImageGenerationRequest.RequestAsync(config, prompt, GetParameters());
             _activeResponses.Add(response);
             var time = 0f;
             while (!response.Status.IsFinished() && time < maxWaitTime)
@@ -54,6 +56,16 @@ namespace DoubTech.AI.Art
 
                 await FetchTextureAsync(response.Url);
             }
+        }
+
+        private Dictionary<string,object> GetParameters()
+        {
+            var width = baseResolution * aspectRatio;
+            var height = baseResolution;
+            var parameters = new Dictionary<string, object>();
+            parameters.Add("width", width);
+            parameters.Add("height", height);
+            return parameters;
         }
 
         private void Foreground(Action action)
@@ -91,7 +103,7 @@ namespace DoubTech.AI.Art
         IEnumerator Request(string prompt)
         {
             var response = new GenerationResponse();
-            yield return ImageGenerationRequest.Request(config, prompt, response);
+            yield return ImageGenerationRequest.Request(config, prompt, GetParameters(), response);
             var time = Time.time;
             while (!response.Status.IsFinished() && time < maxWaitTime)
             {

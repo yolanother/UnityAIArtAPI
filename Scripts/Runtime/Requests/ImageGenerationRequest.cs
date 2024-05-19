@@ -129,9 +129,6 @@ namespace DoubTech.AI.Art.Requests
         {
             var jsonContent = JsonConvert.SerializeObject(requestBody);
             var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-            
-            Debug.Log($"AARON: URL: {url}");
-
 
             using (var httpClient = new HttpClient())
             {
