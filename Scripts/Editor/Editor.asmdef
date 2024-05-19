@@ -1,6 +1,6 @@
 {
-    "name": "",
-    "rootNamespace": "",
+    "name": "DoubTech.AI.Art.Editor",
+    "rootNamespace": "DoubTech.AI.Art",
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,

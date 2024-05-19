@@ -1,6 +1,9 @@
 {
-    "name": "",
-    "rootNamespace": "",
+    "name": "DoubTech.AI.Art",
+    "rootNamespace": "DoubTech.AI.Art",
+    "references": [
+        "DoubTech.ThirdParty.AI.Common"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
