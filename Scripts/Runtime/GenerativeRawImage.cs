@@ -6,11 +6,14 @@ namespace DoubTech.AI.Art
     public class GenerativeRawImage : BaseGenerativeImage
     {
         [Header("Target")]
-        [SerializeField] private RawImage rawImage;
+        [SerializeField] private RawImage[] rawImages;
         
         protected override void OnTextureReady(Texture2D texture)
         {
-            rawImage.texture = texture;
+            foreach (var image in rawImages)
+            {
+                image.texture = texture;
+            }
         }
     }
 }
