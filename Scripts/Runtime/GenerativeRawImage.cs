@@ -1,16 +1,16 @@
-﻿using System;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace DoubTech.AI.Art
 {
-    public class GenerativeTexture : BaseGenerativeImage
+    public class GenerativeRawImage : BaseGenerativeImage
     {
         [Header("Target")]
-        [SerializeField] private Renderer renderer;
+        [SerializeField] private RawImage rawImage;
         
         protected override void OnTextureReady(Texture2D texture)
         {
-            renderer.material.mainTexture = texture;
+            rawImage.texture = texture;
         }
     }
 }
