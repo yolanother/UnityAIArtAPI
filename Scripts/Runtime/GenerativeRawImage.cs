@@ -8,11 +8,11 @@ namespace DoubTech.AI.Art
         [Header("Target")]
         [SerializeField] private RawImage[] rawImages;
         
-        protected override void OnTextureReady(Texture2D texture)
+        protected override void OnTexturesReady(Texture2D[] textures)
         {
-            foreach (var image in rawImages)
+            for (int i = 0; i < rawImages.Length; i++)
             {
-                image.texture = texture;
+                rawImages[i].texture = textures[i % textures.Length];
             }
         }
     }

@@ -3,14 +3,17 @@ using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using DoubTech.AI.Art.Data;
 using DoubTech.AI.Art.Requests;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.Networking;
 
 namespace DoubTech.AI.Art
@@ -24,9 +27,35 @@ namespace DoubTech.AI.Art
         [SerializeField] private float aspectRatio = 1;
         [SerializeField] private bool cacheResponses;
         
-        private ConcurrentQueue<Action> _foregroundActions = new ConcurrentQueue<Action>();
+        [Header("Events")]
+        [SerializeField] private UnityEvent onRequestStarted = new UnityEvent();
+        [SerializeField] private UnityEvent onRequestComplete = new UnityEvent();
+
+        public UnityEvent OnRequestStarted => onRequestStarted;
+        public UnityEvent OnRequestComplete => onRequestComplete;
+        
+        public GenerativeAIConfig Config
+        {
+            get { return config; }
+            set { config = value; }
+        }
+
+        private ConcurrentQueue<Func<Task<object>>> _foregroundActions = new ConcurrentQueue<Func<Task<object>>>();
 
         private HashSet<GenerationResponse> _activeResponses = new HashSet<GenerationResponse>();
+
+        private static SynchronizationContext mainThreadContext;
+        
+        private void Awake()
+        {
+            mainThreadContext = SynchronizationContext.Current;
+        }
+
+        public void Cancel()
+        {
+            StopAllCoroutines();
+            onRequestComplete?.Invoke();
+        }
 
         public void Prompt(string prompt)
         {
@@ -36,7 +65,7 @@ namespace DoubTech.AI.Art
             }
             else
             {
-                RequestAsync(prompt);
+                _ = BackgroundTask(async () => await RequestAsync(prompt));
             }
         }
 
@@ -55,15 +84,16 @@ namespace DoubTech.AI.Art
             texture.LoadImage(await File.ReadAllBytesAsync(filePath));
             return texture;
         }
-        private async void RequestAsync(string prompt)
+        private async Task RequestAsync(string prompt)
         {
-            var cacheName = GetCacheName(prompt);
+            _ = Foreground(() => onRequestStarted?.Invoke());
+            /*var cacheName = GetCacheName(prompt);
             if (cacheResponses && File.Exists(cacheName))
             {
                 Texture2D texture = await LoadImageFromFileAsync(cacheName);
                 OnTextureReady(texture);
                 return;
-            }
+            }*/
             var response = await ImageGenerationRequest.RequestAsync(config, prompt, GetParameters());
             _activeResponses.Add(response);
             var time = 0f;
@@ -79,8 +109,9 @@ namespace DoubTech.AI.Art
             {
                 _activeResponses.Remove(response);
 
-                await FetchTextureAsync(cacheName, response.Url);
+                await FetchTextureAsync(GetImages(response));
             }
+            _ = Foreground(() => onRequestComplete?.Invoke());
         }
 
         private Dictionary<string,object> GetParameters()
@@ -93,13 +124,81 @@ namespace DoubTech.AI.Art
             return parameters;
         }
 
-        private void Foreground(Action action)
+        public static async Task<T> BackgroundTask<T>(Func<Task<T>> func)
         {
-            _foregroundActions.Enqueue(action);
-            #if UNITY_EDITOR
-            EditorApplication.update += HandleForegroundAsync;
-            #endif
-            StartCoroutine(HandleForeground());
+            return await Task.Run(async () =>
+            {
+                try
+                {
+                    return await func();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError(e);
+                    throw;
+                }
+            });
+        }
+
+        public static async Task BackgroundTask(Func<Task> func)
+        {
+            await Task.Run(async () =>
+            {
+                try
+                {
+                    await func();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError(e);
+                    throw;
+                }
+            });
+        }
+
+        public Task Foreground(Action action)
+        {
+            var tcs = new TaskCompletionSource<object>();
+
+            // Post the action to the main thread context
+            mainThreadContext.Post(_ =>
+            {
+                StartCoroutine(ExecuteOnMainThread(() =>
+                {
+                    action();
+                    return null;
+                }, tcs));
+            }, null);
+
+            return tcs.Task;
+        }
+        
+        public Task<T> Foreground<T>(Func<T> action)
+        {
+            var tcs = new TaskCompletionSource<T>();
+
+            // Post the action to the main thread context
+            mainThreadContext.Post(_ =>
+            {
+                StartCoroutine(ExecuteOnMainThread(action, tcs));
+            }, null);
+
+            return tcs.Task;
+        }
+
+        private static IEnumerator ExecuteOnMainThread<T>(Func<T> action, TaskCompletionSource<T> tcs)
+        {
+            // Execute the action safely and handle exceptions
+            try
+            { 
+                var result = action();
+                tcs.SetResult(result);
+            }
+            catch (Exception e)
+            {
+                tcs.SetException(e);
+                yield break;
+            }
         }
 
         private void FlushForeground()
@@ -127,9 +226,10 @@ namespace DoubTech.AI.Art
 
         IEnumerator Request(string prompt)
         {
+            onRequestStarted?.Invoke();
             var cacheName = GetCacheName(prompt);
             
-            if (cacheResponses && File.Exists(cacheName))
+            /*if (cacheResponses && File.Exists(cacheName))
             {
                 Task<Texture2D> texture = LoadImageFromFileAsync(cacheName);
                 while (!texture.IsCompleted) yield return null;
@@ -138,12 +238,12 @@ namespace DoubTech.AI.Art
                     OnTextureReady(texture.Result);
                     yield break;
                 }
-            }
+            }*/
             
             var response = new GenerationResponse();
             yield return ImageGenerationRequest.Request(config, prompt, GetParameters(), response);
             var time = Time.time;
-            while (!response.Status.IsFinished() && time < maxWaitTime)
+            while (!response.Status.IsFinished() && Time.time - time < maxWaitTime)
             {
                 yield return new WaitForSeconds(5);
                 yield return ImageGenerationRequest.UpdateStatus(response);
@@ -153,41 +253,84 @@ namespace DoubTech.AI.Art
             {
                 _activeResponses.Remove(response);
 
-                yield return FetchTextureAsync(response.Url, cacheName);
-            }
-        }
-
-        IEnumerator FetchTexture(string url)
-        {
-            UnityWebRequest request = UnityWebRequestTexture.GetTexture(url);
-            yield return request.SendWebRequest();
-
-            if (request.result != UnityWebRequest.Result.Success)
-            {
-                Debug.Log(request.error);
-            }
-            else
-            {
-                Texture2D texture = ((DownloadHandlerTexture)request.downloadHandler).texture;
-                OnTextureReady(texture);
-            }
-        }
-
-        protected abstract void OnTextureReady(Texture2D texture);
-
-        public async Task FetchTextureAsync(string url, string cacheFile = null)
-        {
-            using (var httpClient = new HttpClient())
-            {
-                byte[] imageBytes = await httpClient.GetByteArrayAsync(url);
-                File.WriteAllBytes(cacheFile, imageBytes);
-                Foreground(() =>
+                var images = GetImages(response);
+                if(null != images)
                 {
-                    Texture2D texture = new Texture2D(2, 2);
-                    texture.LoadImage(imageBytes);
-                    OnTextureReady(texture);
-                });
+                    yield return FetchTextureAsync(images);
+                }
+                else
+                {
+                    Debug.LogError("No images found in response.");
+                }
             }
+            onRequestComplete?.Invoke();
+        }
+
+        private string[] GetImages(GenerationResponse response)
+        {
+            if (response.Images.Count > 0)
+            {
+                return response.Images.Select(i => i.Url).ToArray();
+            }
+            else if(!string.IsNullOrEmpty(response.Url))
+            {
+                return new [] { response.Url };
+            }
+
+            return null;
+        }
+
+        IEnumerator FetchTexture(string url, params string[] urls)
+        {
+            Texture2D[] textures = new Texture2D[urls.Length + 1];
+
+            for (int i = 0; i < textures.Length; i++)
+            {
+                var currentUrl = i == 0 ? url : urls[i - 1];
+                UnityWebRequest request = UnityWebRequestTexture.GetTexture(currentUrl);
+                yield return request.SendWebRequest();
+
+                if (request.result != UnityWebRequest.Result.Success)
+                {
+                    Debug.Log(request.error);
+                }
+                else
+                {
+                    Texture2D texture = ((DownloadHandlerTexture)request.downloadHandler).texture;
+                    OnTextureReady(i, texture);
+                }
+            }
+            
+            OnTexturesReady(textures);
+        }
+
+        protected virtual void OnTexturesReady(Texture2D[] textures) {}
+        protected virtual void OnTextureReady(int index, Texture2D textures) {}
+
+        public async Task FetchTextureAsync(string[] urls, string cacheFile = null)
+        {
+            var textures = new Texture2D[urls.Length];
+            for (int i = 0; i < urls.Length; i++)
+            {
+                using (var httpClient = new HttpClient())
+                {
+                    var url = urls[i];
+                    byte[] imageBytes = await httpClient.GetByteArrayAsync(url);
+                    //await File.WriteAllBytesAsync(cacheFile, imageBytes);
+                    var texture = await Foreground<Texture2D>(() =>
+                    {
+                        Texture2D texture = new Texture2D(2, 2);
+                        texture.LoadImage(imageBytes);
+                        OnTextureReady(i, texture);
+                        return texture;
+                    });
+                    textures[i] = texture;
+                }
+            }
+            Foreground(() =>
+            {
+                OnTexturesReady(textures);
+            });
         }
     }
     

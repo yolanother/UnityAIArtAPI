@@ -1,6 +1,6 @@
-﻿using DoubTech.AI.Art.Requests;
+﻿using System.Collections.Generic;
+using DoubTech.AI.Art.Requests;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 
 namespace DoubTech.AI.Art.Data
 {
@@ -19,10 +19,16 @@ namespace DoubTech.AI.Art.Data
         [JsonProperty("url")]
         public string Url { get; set; }
 
+        [JsonProperty("image-count")]
+        public int ImageCount { get; set; }
+
+        [JsonProperty("images")]
+        public List<GeneratedImage> Images { get; set; }
+
         [JsonIgnore]
         public ImageGenerationRequest Request { get; set; }
     }
-    
+
     public enum GenerationStatus
     {
         Queued,
@@ -30,7 +36,7 @@ namespace DoubTech.AI.Art.Data
         Failed,
         Complete
     }
-    
+
     public static class GenerationStatusExtensions
     {
         public static bool IsFinished(this GenerationStatus status)

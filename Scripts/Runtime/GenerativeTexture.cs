@@ -7,10 +7,10 @@ namespace DoubTech.AI.Art
     {
         [Header("Target")]
         [SerializeField] private Renderer renderer;
-        
-        protected override void OnTextureReady(Texture2D texture)
+
+        protected override void OnTextureReady(int index, Texture2D texture)
         {
-            renderer.material.mainTexture = texture;
+            if(index == 0) renderer.material.mainTexture = texture;
         }
     }
 }

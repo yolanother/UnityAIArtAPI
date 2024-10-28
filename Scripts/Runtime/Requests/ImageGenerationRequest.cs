@@ -8,6 +8,7 @@ using DoubTech.AI.Art.Data;
 using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.Networking;
+using UnityEngine.UIElements;
 
 namespace DoubTech.AI.Art.Requests
 {
@@ -76,6 +77,7 @@ namespace DoubTech.AI.Art.Requests
             var jsonContent = JsonConvert.SerializeObject(requestBody);
             byte[] bodyRaw = Encoding.UTF8.GetBytes(jsonContent);
 
+            Debug.Log("Request: " + url);
             using (UnityWebRequest request = new UnityWebRequest(url, "GET"))
             {
                 request.uploadHandler = new UploadHandlerRaw(bodyRaw);
@@ -127,35 +129,38 @@ namespace DoubTech.AI.Art.Requests
 
         private static async Task<GenerationResponse> SendRequestAsync(string url, ImageGenerationRequest requestBody, GenerationResponse response = null)
         {
-            var jsonContent = JsonConvert.SerializeObject(requestBody);
-            var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
-
-            using (var httpClient = new HttpClient())
+            return await BaseGenerativeImage.BackgroundTask<GenerationResponse>(async () =>
             {
-                httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", requestBody.Config.apiKey);
+                var jsonContent = JsonConvert.SerializeObject(requestBody);
+                var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-                var responseMessage = await httpClient.PostAsync(url, httpContent);
-
-                if (responseMessage.IsSuccessStatusCode)
+                using (var httpClient = new HttpClient())
                 {
-                    var responseContent = await responseMessage.Content.ReadAsStringAsync();
-                    if (null == response)
+                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", requestBody.Config.apiKey);
+
+                    var responseMessage = await httpClient.PostAsync(url, httpContent);
+
+                    if (responseMessage.IsSuccessStatusCode)
                     {
-                        response = JsonConvert.DeserializeObject<GenerationResponse>(responseContent);
+                        var responseContent = await responseMessage.Content.ReadAsStringAsync();
+                        if (null == response)
+                        {
+                            response = JsonConvert.DeserializeObject<GenerationResponse>(responseContent);
+                        }
+                        else
+                        {
+                            JsonConvert.PopulateObject(responseContent, response);
+                        }
+
+                        response.Request = requestBody;
+                        return response;
                     }
                     else
                     {
-                        JsonConvert.PopulateObject(responseContent, response);
+                        throw new Exception($"Request failed with status code {responseMessage.StatusCode}");
                     }
-
-                    response.Request = requestBody;
-                    return response;
                 }
-                else
-                {
-                    throw new Exception($"Request failed with status code {responseMessage.StatusCode}");
-                }
-            }
+            });
         }
     }
 }

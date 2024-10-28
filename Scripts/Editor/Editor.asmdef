@@ -1,6 +1,9 @@
 {
     "name": "DoubTech.AI.Art.Editor",
     "rootNamespace": "DoubTech.AI.Art",
+    "references": [
+        "GUID:ecdb9eb742ba89140b6e2953cf5fd366"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
