@@ -15,6 +15,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.Networking;
+using Random = UnityEngine.Random;
 
 namespace DoubTech.AI.Art
 {
@@ -24,6 +25,7 @@ namespace DoubTech.AI.Art
         [SerializeField] GenerativeAIConfig config;
         [SerializeField] private float maxWaitTime = 60;
         [SerializeField] private int baseResolution = 512;
+        [SerializeField] private string seed;
         [SerializeField] private float aspectRatio = 1;
         [SerializeField] private bool cacheResponses;
         
@@ -33,6 +35,12 @@ namespace DoubTech.AI.Art
 
         public UnityEvent OnRequestStarted => onRequestStarted;
         public UnityEvent OnRequestComplete => onRequestComplete;
+        
+        public int Seed
+        {
+            get { return int.TryParse(seed, out var v) ? v : Random.Range(0, Int32.MaxValue); }
+            set { seed = value.ToString(); }
+        }
         
         public GenerativeAIConfig Config
         {
@@ -121,7 +129,14 @@ namespace DoubTech.AI.Art
             var parameters = new Dictionary<string, object>();
             parameters.Add("width", width);
             parameters.Add("height", height);
+            if(!string.IsNullOrEmpty(seed)) parameters.Add("seed", seed);
             return parameters;
+        }
+
+        public void RandomizeSeed()
+        {
+            // Random 32 bit seed
+            seed = Random.Range(0, int.MaxValue).ToString();
         }
 
         public static async Task<T> BackgroundTask<T>(Func<Task<T>> func)

@@ -94,6 +94,7 @@ namespace DoubTech.AI.Art.Requests
                 else
                 {
                     var responseContent = request.downloadHandler.text;
+                    Debug.Log(responseContent);
                     JsonConvert.PopulateObject(responseContent, response);
                     response.Request = requestBody;
                     requestBody.Id = response.Id;
