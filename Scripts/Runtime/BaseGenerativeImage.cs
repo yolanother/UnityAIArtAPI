@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DoubTech.AI.Art.Data;
 using DoubTech.AI.Art.Requests;
+using DoubTech.AI.Art.Threading;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Events;
@@ -32,9 +33,13 @@ namespace DoubTech.AI.Art
         [Header("Events")]
         [SerializeField] private UnityEvent onRequestStarted = new UnityEvent();
         [SerializeField] private UnityEvent onRequestComplete = new UnityEvent();
+        [SerializeField] private UnityEvent<string> onRequestFailed = new UnityEvent<string>();
 
         public UnityEvent OnRequestStarted => onRequestStarted;
         public UnityEvent OnRequestComplete => onRequestComplete;
+        public UnityEvent<string> OnRequestFailed => onRequestFailed;
+        
+        private static ConcurrentDictionary<GenerativeAIConfig, float> _lastRequestTimes = new ConcurrentDictionary<GenerativeAIConfig, float>();
         
         public int Seed
         {
@@ -50,13 +55,18 @@ namespace DoubTech.AI.Art
 
         private ConcurrentQueue<Func<Task<object>>> _foregroundActions = new ConcurrentQueue<Func<Task<object>>>();
 
-        private HashSet<GenerationResponse> _activeResponses = new HashSet<GenerationResponse>();
+        private HashSet<ImageJob> _activeResponses = new HashSet<ImageJob>();
 
         private static SynchronizationContext mainThreadContext;
-        
+        private string _lastPrompt;
+        private ImageJob _lastResponse;
+        private string _lastId;
+        private ThreadContext _threadUtils;
+        public ThreadContext ThreadContext => _threadUtils;
+
         private void Awake()
         {
-            mainThreadContext = SynchronizationContext.Current;
+            _threadUtils = new ThreadContext(this);
         }
 
         public void Cancel()
@@ -67,14 +77,73 @@ namespace DoubTech.AI.Art
 
         public void Prompt(string prompt)
         {
+            _lastPrompt = prompt;
             if (Application.isPlaying)
             {
                 StartCoroutine(Request(prompt));
             }
             else
             {
-                _ = BackgroundTask(async () => await RequestAsync(prompt));
+                _ = _threadUtils.Background(async () => await RequestAsync(prompt));
             }
+        }
+        
+        public class AsyncResult
+        {
+            
+        }
+        
+        /// <summary>
+        /// Prompts the generative AI with the given prompt and returns the generated images.
+        /// </summary>
+        /// <param name="prompt"></param>
+        /// <returns></returns>
+        public async Task<Texture2D[]> PromptAsync(string prompt)
+        {
+            _lastPrompt = prompt;
+            var task =  await RequestAsync(prompt);
+            return await task.GetImages();
+        }
+
+        /// <summary>
+        /// Starts a prompt and returns a task that can be awaited for the result.
+        /// </summary>
+        /// <param name="prompt"></param>
+        /// <returns></returns>
+        public async Task<ImageRequestTask> StartPromptAsync(string prompt)
+        {
+            _lastPrompt = prompt;
+            return await RequestAsync(prompt);
+        }
+
+        public void Retry()
+        {
+            StopAllCoroutines();
+            StartCoroutine(RetryCoroutine());
+        }
+        
+        private IEnumerator RetryCoroutine()
+        {
+            if (string.IsNullOrEmpty(_lastId)) yield break;
+            
+            onRequestStarted?.Invoke();
+            var response = new ImageJob();
+            response.Id = _lastId;
+            yield return ImageGenerationRequest.UpdateStatus(Config, _lastId, response, error =>
+            {
+                onRequestComplete?.Invoke();
+                onRequestFailed?.Invoke(error);
+            });
+            onRequestComplete?.Invoke();
+            if (!response.Status.IsFinished() && string.IsNullOrEmpty(response.Error))
+            {
+                onRequestFailed?.Invoke("Image not ready yet.");
+            }
+        }
+
+        public void Reroll()
+        {
+            Prompt(_lastPrompt);
         }
 
         private string GetCacheName(string prompt)
@@ -92,9 +161,38 @@ namespace DoubTech.AI.Art
             texture.LoadImage(await File.ReadAllBytesAsync(filePath));
             return texture;
         }
-        private async Task RequestAsync(string prompt)
+
+        public class ImageRequestTask
         {
-            _ = Foreground(() => onRequestStarted?.Invoke());
+            public GenerativeAIConfig config;
+            public ImageJob response;
+            public BaseGenerativeImage genImage;
+            public async Task<Texture2D[]> GetImages()
+            {
+                var textures = new Texture2D[0];
+                genImage._activeResponses.Add(response);
+                var time = 0f;
+                while (!response.Status.IsFinished() && time < genImage.maxWaitTime)
+                {
+                    await Task.Delay(5000);
+                    time += 5;
+
+                    await ImageGenerationRequest.UpdateStatusAsync(response);
+                }
+
+                if (response.Status.IsFinished())
+                {
+                    genImage._activeResponses.Remove(response);
+
+                    textures = await genImage.FetchTextureAsync(genImage.GetImages(response));
+                }
+                _ = genImage.ThreadContext.Foreground(() => genImage.onRequestComplete?.Invoke());
+                return textures;
+            }
+        }
+        private async Task<ImageRequestTask> RequestAsync(string prompt)
+        {
+            _ = _threadUtils.Foreground(() => onRequestStarted?.Invoke());
             /*var cacheName = GetCacheName(prompt);
             if (cacheResponses && File.Exists(cacheName))
             {
@@ -102,24 +200,45 @@ namespace DoubTech.AI.Art
                 OnTextureReady(texture);
                 return;
             }*/
-            var response = await ImageGenerationRequest.RequestAsync(config, prompt, GetParameters());
-            _activeResponses.Add(response);
-            var time = 0f;
-            while (!response.Status.IsFinished() && time < maxWaitTime)
+            try
             {
-                await Task.Delay(5000);
-                time += 5;
-                
-                await ImageGenerationRequest.UpdateStatusAsync(response);
+                // Rate limit individual requests
+                while (_lastRequestTimes.TryGetValue(config, out float lastRequestTime))
+                {
+                    var timeSinceLastRequest = Time.time - lastRequestTime;
+                    if (timeSinceLastRequest < 5)
+                    {
+                        await Task.Delay((int)(1000 - timeSinceLastRequest * 1000));
+                    }
+                    else
+                    {
+                        lock (_lastRequestTimes)
+                        {
+                            lastRequestTime = _lastRequestTimes[config];
+                            if (Time.time - lastRequestTime > 1)
+                            {
+                                _lastRequestTimes[config] = Time.time;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                var response = await ImageGenerationRequest.RequestAsync(config, prompt, GetParameters());
+                return new ImageRequestTask
+                {
+                    response = response,
+                    config = config,
+                    genImage = this
+                };
+            }
+            catch (Exception e)
+            {
+                Debug.LogError(e.Message + "\n" + e.StackTrace);
+                onRequestFailed?.Invoke(e.Message);
             }
 
-            if (response.Status.IsFinished())
-            {
-                _activeResponses.Remove(response);
-
-                await FetchTextureAsync(GetImages(response));
-            }
-            _ = Foreground(() => onRequestComplete?.Invoke());
+            return null;
         }
 
         private Dictionary<string,object> GetParameters()
@@ -139,56 +258,9 @@ namespace DoubTech.AI.Art
             seed = Random.Range(0, int.MaxValue).ToString();
         }
 
-        public static async Task<T> BackgroundTask<T>(Func<Task<T>> func)
-        {
-            return await Task.Run(async () =>
-            {
-                try
-                {
-                    return await func();
-                }
-                catch (Exception e)
-                {
-                    Debug.LogError(e);
-                    throw;
-                }
-            });
-        }
-
-        public static async Task BackgroundTask(Func<Task> func)
-        {
-            await Task.Run(async () =>
-            {
-                try
-                {
-                    await func();
-                }
-                catch (Exception e)
-                {
-                    Debug.LogError(e);
-                    throw;
-                }
-            });
-        }
-
-        public Task Foreground(Action action)
-        {
-            var tcs = new TaskCompletionSource<object>();
-
-            // Post the action to the main thread context
-            mainThreadContext.Post(_ =>
-            {
-                StartCoroutine(ExecuteOnMainThread(() =>
-                {
-                    action();
-                    return null;
-                }, tcs));
-            }, null);
-
-            return tcs.Task;
-        }
         
-        public Task<T> Foreground<T>(Func<T> action)
+        
+        public Task<T> ForegroundCoroutine<T>(Func<T> action)
         {
             var tcs = new TaskCompletionSource<T>();
 
@@ -212,6 +284,7 @@ namespace DoubTech.AI.Art
             catch (Exception e)
             {
                 tcs.SetException(e);
+                Debug.LogError(e);
                 yield break;
             }
         }
@@ -220,7 +293,14 @@ namespace DoubTech.AI.Art
         {
             while (_foregroundActions.TryDequeue(out var action))
             {
-                action();
+                try
+                {
+                    action();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError(e);
+                }
             }
         }
         
@@ -255,13 +335,29 @@ namespace DoubTech.AI.Art
                 }
             }*/
             
-            var response = new GenerationResponse();
-            yield return ImageGenerationRequest.Request(config, prompt, GetParameters(), response);
+            var response = new ImageJob();
+            yield return ImageGenerationRequest.Request(config, prompt, GetParameters(), response, error =>
+            {
+                onRequestFailed?.Invoke(error);
+            });
+            var id = _lastId = response.Id;
+            if(!string.IsNullOrEmpty(response.Error))
+            {
+                onRequestFailed?.Invoke(response.Error);
+                yield break;
+            }
             var time = Time.time;
+            bool failed = false;
             while (!response.Status.IsFinished() && Time.time - time < maxWaitTime)
             {
                 yield return new WaitForSeconds(5);
-                yield return ImageGenerationRequest.UpdateStatus(response);
+                yield return ImageGenerationRequest.UpdateStatus(Config, id, response, error =>
+                {
+                    onRequestComplete?.Invoke();
+                    onRequestFailed?.Invoke(error);
+                    failed = true;
+                });
+                if (failed) yield break;
             }
 
             if (response.Status.IsFinished())
@@ -281,7 +377,7 @@ namespace DoubTech.AI.Art
             onRequestComplete?.Invoke();
         }
 
-        private string[] GetImages(GenerationResponse response)
+        private string[] GetImages(ImageJob response)
         {
             if (response.Images.Count > 0)
             {
@@ -322,7 +418,7 @@ namespace DoubTech.AI.Art
         protected virtual void OnTexturesReady(Texture2D[] textures) {}
         protected virtual void OnTextureReady(int index, Texture2D textures) {}
 
-        public async Task FetchTextureAsync(string[] urls, string cacheFile = null)
+        public async Task<Texture2D[]> FetchTextureAsync(string[] urls, string cacheFile = null)
         {
             var textures = new Texture2D[urls.Length];
             for (int i = 0; i < urls.Length; i++)
@@ -332,7 +428,7 @@ namespace DoubTech.AI.Art
                     var url = urls[i];
                     byte[] imageBytes = await httpClient.GetByteArrayAsync(url);
                     //await File.WriteAllBytesAsync(cacheFile, imageBytes);
-                    var texture = await Foreground<Texture2D>(() =>
+                    var texture = await _threadUtils.Foreground<Texture2D>(() =>
                     {
                         Texture2D texture = new Texture2D(2, 2);
                         texture.LoadImage(imageBytes);
@@ -342,10 +438,11 @@ namespace DoubTech.AI.Art
                     textures[i] = texture;
                 }
             }
-            Foreground(() =>
+            _ = _threadUtils.Foreground(() =>
             {
                 OnTexturesReady(textures);
             });
+            return textures;
         }
     }
     

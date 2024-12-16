@@ -4,7 +4,7 @@ using Newtonsoft.Json;
 
 namespace DoubTech.AI.Art.Data
 {
-    public class GenerationResponse
+    public class ImageJob
     {
         [JsonProperty("id")]
         public string Id { get; set; }
@@ -27,6 +27,9 @@ namespace DoubTech.AI.Art.Data
 
         [JsonIgnore]
         public ImageGenerationRequest Request { get; set; }
+
+        [JsonProperty("error")]
+        public string Error { get; set; } = null;
     }
 
     public enum GenerationStatus
@@ -37,7 +40,7 @@ namespace DoubTech.AI.Art.Data
         Complete
     }
 
-    public static class GenerationStatusExtensions
+    public static class ImageJobExtensions
     {
         public static bool IsFinished(this GenerationStatus status)
         {

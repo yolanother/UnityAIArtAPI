@@ -1,18 +1,28 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using DoubTech.AI.Art.Data;
+using DoubTech.AI.Art.Threading;
 using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.Networking;
-using UnityEngine.UIElements;
 
 namespace DoubTech.AI.Art.Requests
 {
-    public class ImageGenerationRequest
+    public enum RequestState
+    {
+        Idle,
+        Queued,
+        Processing,
+        Complete,
+    }
+    
+    public class ImageGenerationRequest : IGenerationTask
     {
         [JsonIgnore]
         public GenerativeAIConfig Config { get; set; }
@@ -25,23 +35,44 @@ namespace DoubTech.AI.Art.Requests
 
         [JsonProperty("id")]
         public string Id { get; set; }
+        
+        [JsonProperty("image")]
+        public string Image { get; set; }
 
-        public static IEnumerator UpdateStatus(GenerationResponse response)
+        [JsonIgnore]
+        public RequestState State { get; set; } = RequestState.Idle;
+
+        public void SetImage(Texture2D texture)
         {
-            if(string.IsNullOrEmpty(response.Id)) throw new Exception("Cannot update status without an id.");
-            string url = response.Request.Config.endpoint;
-            response.Request.Id = response.Id;
-            yield return SendRequest(url, response.Request, response);
+            // Convert the texture into a base64 string.
+            Image = "data:image/png;base64," + Convert.ToBase64String(texture.EncodeToPNG());
+        }
+        
+        private static ConcurrentDictionary<GenerativeAIConfig, float> _lastRequestTimes = new ConcurrentDictionary<GenerativeAIConfig, float>();
+
+        public static IEnumerator UpdateStatus(GenerativeAIConfig config, string id, ImageJob response, Action<string> onError)
+        {
+            if (string.IsNullOrEmpty(id))
+            {
+                onError?.Invoke("Cannot update status without an id.");
+            }
+            string url = config.host + config.statusEndpoint;
+            var request = new ImageGenerationRequest();
+            request.Config = config;
+            request.Id = id;
+            response.Request = request;
+            response.Id = id;
+            yield return SendRequest(url, request, response, onError);
         }
 
-        public static IEnumerator Request(GenerativeAIConfig config, string prompt, GenerationResponse response)
+        public static IEnumerator Request(GenerativeAIConfig config, string prompt, ImageJob response, Action<string> onError)
         {
-            return Request(config, prompt, null, response);
+            return Request(config, prompt, null, response, onError);
         }
 
         private static string CreateUrl(GenerativeAIConfig config, Dictionary<string,object> parameters)
         {
-            string url = config.endpoint;
+            string url = config.host + config.jobEndpoint;
             if (parameters != null && parameters.Count > 0)
             {
                 url += url.Contains("?") ? "&" : "?";
@@ -58,7 +89,7 @@ namespace DoubTech.AI.Art.Requests
         }
 
         public static IEnumerator Request(GenerativeAIConfig config, string prompt,
-            Dictionary<string, object> parameters, GenerationResponse response)
+            Dictionary<string, object> parameters, ImageJob response, Action<string> onError)
         {
             var requestBody = new ImageGenerationRequest
             {
@@ -69,15 +100,31 @@ namespace DoubTech.AI.Art.Requests
             
             var url = CreateUrl(config, parameters);
 
-            yield return SendRequest(url, requestBody, response);
+            yield return SendRequest(url, requestBody, response, onError);
         }
 
-        private static IEnumerator SendRequest(string url, ImageGenerationRequest requestBody, GenerationResponse response)
+        private static IEnumerator SendRequest(string url, ImageGenerationRequest requestBody, ImageJob response, Action<string> onError)
         {
+            while(_lastRequestTimes.TryGetValue(requestBody.Config, out float lastRequestTime))
+            {
+                lock (_lastRequestTimes)
+                {
+                    lastRequestTime = _lastRequestTimes[requestBody.Config];
+                    if (Time.time - lastRequestTime > 1)
+                    {
+                        _lastRequestTimes[requestBody.Config] = Time.time;
+                        break;
+                    }
+                }
+                yield return new WaitForSeconds(1);
+            }
+            
+            _lastRequestTimes[requestBody.Config] = Time.time;
+            
             var jsonContent = JsonConvert.SerializeObject(requestBody);
             byte[] bodyRaw = Encoding.UTF8.GetBytes(jsonContent);
 
-            Debug.Log("Request: " + url);
+            Debug.Log("Request: " + url + "\n" + jsonContent);
             using (UnityWebRequest request = new UnityWebRequest(url, "GET"))
             {
                 request.uploadHandler = new UploadHandlerRaw(bodyRaw);
@@ -89,7 +136,9 @@ namespace DoubTech.AI.Art.Requests
 
                 if (request.result != UnityWebRequest.Result.Success)
                 {
-                    Debug.LogError($"Request failed with status code {request.responseCode}");
+                    response.Error = $"Request failed with status code {request.responseCode}";
+                    Debug.LogError(response.Error);
+                    onError?.Invoke(response.Error);
                 }
                 else
                 {
@@ -98,24 +147,28 @@ namespace DoubTech.AI.Art.Requests
                     JsonConvert.PopulateObject(responseContent, response);
                     response.Request = requestBody;
                     requestBody.Id = response.Id;
+                    if (!string.IsNullOrEmpty(response.Error))
+                    {
+                        onError?.Invoke(response.Error);
+                    }
                 }
             }
         }
 
-        public static Task<GenerationResponse> UpdateStatusAsync(GenerationResponse lastResponse)
+        public static Task<ImageJob> UpdateStatusAsync(ImageJob lastResponse)
         {
-            if(string.IsNullOrEmpty(lastResponse.Id)) throw new Exception("Cannot update status without an id.");
-            string url = lastResponse.Request.Config.endpoint;
+            if(string.IsNullOrEmpty(lastResponse.Id)) {throw new Exception("Cannot update status without an id.");}
+            string url = lastResponse.Request.Config.host + lastResponse.Request.Config.statusEndpoint;
             lastResponse.Request.Id = lastResponse.Id;
             return SendRequestAsync(url, lastResponse.Request, lastResponse);
         }
 
-        public static Task<GenerationResponse> RequestAsync(GenerativeAIConfig config, string prompt)
+        public static Task<ImageJob> RequestAsync(GenerativeAIConfig config, string prompt)
         {
             return RequestAsync(config, prompt, null);
         }
 
-        public static Task<GenerationResponse> RequestAsync(GenerativeAIConfig config, string prompt,
+        public static Task<ImageJob> RequestAsync(GenerativeAIConfig config, string prompt,
             Dictionary<string, object> parameters)
         {
             var requestBody = new ImageGenerationRequest
@@ -127,18 +180,38 @@ namespace DoubTech.AI.Art.Requests
 
             return SendRequestAsync(url, requestBody);
         }
-
-        private static async Task<GenerationResponse> SendRequestAsync(string url, ImageGenerationRequest requestBody, GenerationResponse response = null)
+        
+        public class HttpClientHelper
         {
-            return await BaseGenerativeImage.BackgroundTask<GenerationResponse>(async () =>
+            public static HttpClient CreateHttpClient()
+            {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+
+                HttpClientHandler handler = new HttpClientHandler
+                {
+                    ServerCertificateCustomValidationCallback = (sender, cert, chain, sslPolicyErrors) => true
+                };
+
+                return new HttpClient(handler);
+            }
+        }
+
+        private static HttpClient httpClient =  ImageGenerationRequest.HttpClientHelper.CreateHttpClient();
+        private static async Task<ImageJob> SendRequestAsync(string url, ImageGenerationRequest requestBody,
+            ImageJob response = null)
+        {
+            return await ThreadContext.BackgroundTask<ImageJob>(async () =>
             {
                 var jsonContent = JsonConvert.SerializeObject(requestBody);
                 var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-                using (var httpClient = new HttpClient())
-                {
-                    httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", requestBody.Config.apiKey);
+                httpClient.DefaultRequestHeaders.Accept.Add(
+                    new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                httpClient.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", requestBody.Config.apiKey);
 
+                try
+                {
                     var responseMessage = await httpClient.PostAsync(url, httpContent);
 
                     if (responseMessage.IsSuccessStatusCode)
@@ -146,7 +219,7 @@ namespace DoubTech.AI.Art.Requests
                         var responseContent = await responseMessage.Content.ReadAsStringAsync();
                         if (null == response)
                         {
-                            response = JsonConvert.DeserializeObject<GenerationResponse>(responseContent);
+                            response = JsonConvert.DeserializeObject<ImageJob>(responseContent);
                         }
                         else
                         {
@@ -158,10 +231,24 @@ namespace DoubTech.AI.Art.Requests
                     }
                     else
                     {
-                        throw new Exception($"Request failed with status code {responseMessage.StatusCode}");
+                        Debug.LogError($"Request {url} failed with status code {responseMessage.StatusCode}");
+                        throw new Exception($"Request {url} failed with status code {responseMessage.StatusCode}");
                     }
                 }
+                catch (Exception e)
+                {
+                    Debug.LogError($"Request {url} failed with exception {e.Message}");
+                    throw e;
+                }
             });
+        }
+
+        [JsonIgnore] public string TaskName => Config.Name;
+        [JsonIgnore] public string TaskDescription => $"Request to create a new {TaskName} job.";
+        [JsonIgnore] public TaskEvents Events { get; } = new TaskEvents(); 
+        public void Cancel()
+        {
+            // Single http request cannot be canceled.
         }
     }
 }

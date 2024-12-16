@@ -7,6 +7,8 @@ namespace DoubTech.AI.Art
     {
         [Header("Target")]
         [SerializeField] private RawImage[] rawImages;
+
+        public RawImage[] RawImages => rawImages;
         
         protected override void OnTexturesReady(Texture2D[] textures)
         {
