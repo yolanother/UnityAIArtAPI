@@ -28,6 +28,9 @@ namespace DoubTech.AI.Art.Requests
         [SerializeField] private UnityEvent<IGenerationTask> onRequestFailed = new UnityEvent<IGenerationTask>();
         [SerializeField] private UnityEvent<IGenerationTask> onRequestCancelled = new UnityEvent<IGenerationTask>();
         [SerializeField] private UnityEvent<IGenerationTask> onRequestTimedOut = new UnityEvent<IGenerationTask>();
+        [SerializeField] private UnityEvent<IGenerationTask, Color> onTaskColorChanged = new UnityEvent<IGenerationTask, Color>();
+        [SerializeField] private UnityEvent<IGenerationTask, string> onTaskDescriptionChanged = new UnityEvent<IGenerationTask, string>();
+        [SerializeField] private UnityEvent<IGenerationTask, string> onTaskTitleChanged = new UnityEvent<IGenerationTask, string>();
         
         public UnityEvent<IGenerationTask> OnRequestStarted => onRequestStarted;
         public UnityEvent<IGenerationTask> OnRequestCompleted => onRequestCompleted;
@@ -35,6 +38,9 @@ namespace DoubTech.AI.Art.Requests
         public UnityEvent<IGenerationTask> OnRequestFailed => onRequestFailed;
         public UnityEvent<IGenerationTask> OnRequestCancelled => onRequestCancelled;
         public UnityEvent<IGenerationTask> OnRequestTimedOut => onRequestTimedOut;
+        public UnityEvent<IGenerationTask, Color> OnTaskColorChanged => onTaskColorChanged;
+        public UnityEvent<IGenerationTask, string> OnTaskDescriptionChanged => onTaskDescriptionChanged;
+        public UnityEvent<IGenerationTask, string> OnTaskTitleChanged => onTaskTitleChanged;
 
         /// <summary>
         /// Triggers any events called on this event object to call the corresponding events on the provided events object.
@@ -135,8 +141,19 @@ namespace DoubTech.AI.Art.Requests
 
         public static async Task<ImageRequestTask> RequestAsync(ImageGenerationRequest request)
         {
-            if (!request.Config) throw new Exception("Request must have a config.");
-            if (!instance) throw new Exception("ImageGenRequestManager must be active to make requests.");
+            if (!request.Config)
+            {
+                request.Events?.OnTaskDescriptionChanged?.Invoke(request, "Request must have a config.");
+                request.Events?.OnRequestFailed?.Invoke(request);
+                throw new Exception("Request must have a config.");
+            }
+
+            if (!instance)
+            {
+                request.Events?.OnTaskDescriptionChanged?.Invoke(request, "ImageGenRequestManager must be active to make requests.");
+                request.Events?.OnRequestFailed?.Invoke(request);
+                throw new Exception("ImageGenRequestManager must be active to make requests.");
+            }
             
             return await instance.RequestAsyncInternal(request);
         }
