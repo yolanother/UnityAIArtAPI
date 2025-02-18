@@ -27,8 +27,7 @@ namespace DoubTech.AI.Art.Requests
         [JsonIgnore]
         public GenerativeAIConfig Config { get; set; }
 
-        [JsonIgnore]
-        public Dictionary<string,object> Parameters { get; set; }
+        [JsonIgnore] public Dictionary<string, object> Parameters { get; set; } = new();
 
         [JsonProperty("prompt")]
         public string Prompt { get; set; }

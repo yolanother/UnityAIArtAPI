@@ -24,6 +24,54 @@ namespace DoubTech.AI.Art.Threading
 
         public async Task<T> Background<T>(Func<Task<T>> func) => await BackgroundTask(func);
         
+        public async Task<T> Background<T, U>(Func<U, Task<T>> func, U arg)
+        {
+            return await Task.Run(async () =>
+            {
+                try
+                {
+                    return await func(arg);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError(e);
+                    throw;
+                }
+            });
+        }
+        
+        public async Task<T> Background<T, U, V>(Func<U, V, Task<T>> func, U arg1, V arg2)
+        {
+            return await Task.Run(async () =>
+            {
+                try
+                {
+                    return await func(arg1, arg2);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError(e);
+                    throw;
+                }
+            });
+        }
+        
+        public async Task<T> Background<T, U, V, W>(Func<U, V, W, Task<T>> func, U arg1, V arg2, W arg3)
+        {
+            return await Task.Run(async () =>
+            {
+                try
+                {
+                    return await func(arg1, arg2, arg3);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError(e);
+                    throw;
+                }
+            });
+        }
+        
         public static async Task<T> BackgroundTask<T>(Func<Task<T>> func)
         {
             return await Task.Run(async () =>
